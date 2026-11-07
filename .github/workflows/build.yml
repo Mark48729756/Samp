@@ -17,17 +17,32 @@ jobs:
           - { dir: LiquidGallery,    name: Gallery }
     steps:
       - uses: actions/checkout@v4
+      - name: Unpack zip archives from repo root (if any)
+        run: |
+          shopt -s nullglob
+          for z in *.zip; do echo "Unpacking $z"; unzip -oq "$z" -x '.github/*'; done
+      - name: Check project exists
+        id: chk
+        run: |
+          if [ -f "${{ matrix.dir }}/settings.gradle.kts" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "::notice::${{ matrix.dir }} not found, skipping"; fi
       - uses: actions/setup-java@v4
+        if: steps.chk.outputs.ok == 'true'
         with: { distribution: temurin, java-version: 17 }
       - name: Accept Android licenses
+        if: steps.chk.outputs.ok == 'true'
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
+        if: steps.chk.outputs.ok == 'true'
         with: { gradle-version: 8.13 }
       - name: Build release APK
+        if: steps.chk.outputs.ok == 'true'
         working-directory: ${{ matrix.dir }}
         run: gradle assembleRelease --no-daemon
-      - run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
+      - name: Collect APK
+        if: steps.chk.outputs.ok == 'true'
+        run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
       - uses: softprops/action-gh-release@v2
+        if: steps.chk.outputs.ok == 'true'
         with:
           tag_name: ${{ matrix.name }}-${{ github.run_number }}
           name: ${{ matrix.name }} ${{ github.run_number }}
