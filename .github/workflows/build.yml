@@ -41,6 +41,11 @@ jobs:
       - name: Collect APK
         if: steps.chk.outputs.ok == 'true'
         run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
+      - uses: actions/upload-artifact@v4
+        if: steps.chk.outputs.ok == 'true'
+        with:
+          name: ${{ matrix.name }}-apk
+          path: ${{ matrix.name }}.apk
       - uses: softprops/action-gh-release@v2
         if: steps.chk.outputs.ok == 'true'
         with:
