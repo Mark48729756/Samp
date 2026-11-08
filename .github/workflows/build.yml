@@ -28,6 +28,17 @@ jobs:
           test -f platform_frameworks_libs_systemui/iconloaderlib/src/com/android/launcher3/icons/FastBitmapDrawable.kt
           ls prebuilts/libs | head -3
 
+      - name: Fetch prebuilts (framework-16.jar и др.) из оригинального Lawnchair
+        run: |
+          if [ ! -f prebuilts/libs/framework-16.jar ]; then
+            git clone -q --depth 1 --filter=blob:none --sparse --branch 16-dev \
+              https://github.com/LawnchairLauncher/lawnchair.git /tmp/upstream
+            git -C /tmp/upstream sparse-checkout set prebuilts
+            mkdir -p prebuilts
+            cp -a /tmp/upstream/prebuilts/. prebuilts/
+          fi
+          ls -la prebuilts/libs/framework-16.jar
+
       - uses: actions/setup-java@v6
         with:
           distribution: 'zulu'
