@@ -46,11 +46,29 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.chk.outputs.ok == 'true'
         with:
-          name: ${{ matrix.name }}-apk
+          name: apk-${{ matrix.name }}
           path: ${{ matrix.name }}.apk
-      - uses: softprops/action-gh-release@v2
-        if: steps.chk.outputs.ok == 'true'
+          compression-level: 0
+
+  package:
+    needs: build
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      # склеивает все apk-* в один артефакт LiquidApps и удаляет промежуточные
+      - uses: actions/upload-artifact/merge@v4
         with:
-          tag_name: ${{ matrix.name }}-${{ github.run_number }}
-          name: ${{ matrix.name }} ${{ github.run_number }}
-          files: ${{ matrix.name }}.apk
+          name: LiquidApps
+          pattern: apk-*
+          delete-merged: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: LiquidApps
+          path: apks
+      - name: Zip all APKs
+        run: cd apks && zip -q ../LiquidApps.zip *.apk && ls -la ../LiquidApps.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: LiquidApps.zip
