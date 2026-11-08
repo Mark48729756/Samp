@@ -1,56 +1,55 @@
-name: Build Glass APK
-
+name: Build APKs
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
-
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { dir: LiquidClock,      name: Clock }
+          - { dir: LiquidCalculator, name: Calculator }
+          - { dir: LiquidGallery,    name: Gallery }
+          - { dir: LiquidFiles,      name: Files }
     steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: false   # подмодуль лежит внутри glass-overlay.zip обычными файлами
-
-      - name: Unzip glass-overlay.zip over the project
+      - uses: actions/checkout@v4
+      - name: Unpack zip archives from repo root (if any)
         run: |
-          ZIP=$(ls glass-overlay.zip lawnchair-nightly-glass.zip 2>/dev/null | head -1)
-          if [ -z "$ZIP" ]; then echo "В корне репозитория нет glass-overlay.zip"; exit 1; fi
-          echo "Распаковываю $ZIP"
-          mkdir -p /tmp/glass
-          unzip -oq "$ZIP" -d /tmp/glass
-          # если внутри есть верхняя папка lawnchair-nightly/ - берём содержимое из неё
-          SRC=/tmp/glass
-          [ -d /tmp/glass/lawnchair-nightly ] && SRC=/tmp/glass/lawnchair-nightly
-          rm -rf platform_frameworks_libs_systemui
-          cp -a "$SRC"/. .
-          test -f platform_frameworks_libs_systemui/iconloaderlib/src/com/android/launcher3/icons/FastBitmapDrawable.kt
-          ls prebuilts/libs | head -3
-
-      - name: Fetch prebuilts (framework-16.jar и др.) из оригинального Lawnchair
+          shopt -s nullglob
+          for z in *.zip; do echo "Unpacking $z"; unzip -oq "$z" -x '.github/*'; done
+      - name: Check project exists
+        id: chk
         run: |
-          if [ ! -f prebuilts/libs/framework-16.jar ]; then
-            git clone -q --depth 1 --filter=blob:none --sparse --branch 16-dev \
-              https://github.com/LawnchairLauncher/lawnchair.git /tmp/upstream
-            git -C /tmp/upstream sparse-checkout set prebuilts
-            mkdir -p prebuilts
-            cp -a /tmp/upstream/prebuilts/. prebuilts/
-          fi
-          ls -la prebuilts/libs/framework-16.jar
-
-      - uses: actions/setup-java@v6
+          if [ -f "${{ matrix.dir }}/settings.gradle.kts" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "::notice::${{ matrix.dir }} not found, skipping"; fi
+      - uses: actions/setup-java@v4
+        if: steps.chk.outputs.ok == 'true'
+        with: { distribution: temurin, java-version: 17 }
+      - name: Accept Android licenses
+        if: steps.chk.outputs.ok == 'true'
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.chk.outputs.ok == 'true'
+        with: { gradle-version: 8.13 }
+      - name: Build release APK
+        if: steps.chk.outputs.ok == 'true'
+        working-directory: ${{ matrix.dir }}
+        run: gradle assembleRelease --no-daemon
+      - name: Collect APK
+        if: steps.chk.outputs.ok == 'true'
+        run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
+      - uses: actions/upload-artifact@v4
+        if: steps.chk.outputs.ok == 'true'
         with:
-          distribution: 'zulu'
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v6
-
-      - name: Build debug APK
-        run: ./gradlew assembleLawnWithQuickstepGithubDebug --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v7
+          name: ${{ matrix.name }}-apk
+          path: ${{ matrix.name }}.apk
+      - uses: softprops/action-gh-release@v2
+        if: steps.chk.outputs.ok == 'true'
         with:
-          name: Lawnchair-Glass-debug
-          path: build/outputs/apk/**/*.apk
-          if-no-files-found: error
+          tag_name: ${{ matrix.name }}-${{ github.run_number }}
+          name: ${{ matrix.name }} ${{ github.run_number }}
+          files: ${{ matrix.name }}.apk
