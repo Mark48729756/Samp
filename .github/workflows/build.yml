@@ -16,6 +16,7 @@ jobs:
           - { dir: LiquidCalculator, name: Calculator }
           - { dir: LiquidGallery,    name: Gallery }
           - { dir: LiquidFiles,      name: Files }
+          - { dir: LiquidRecorder,   name: Recorder }
     steps:
       - uses: actions/checkout@v4
       - name: Unpack zip archives from repo root (if any)
