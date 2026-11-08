@@ -1,54 +1,45 @@
-name: Build APKs
+name: Build Glass APK
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
-permissions:
-  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { dir: LiquidClock,      name: Clock }
-          - { dir: LiquidCalculator, name: Calculator }
-          - { dir: LiquidGallery,    name: Gallery }
     steps:
-      - uses: actions/checkout@v4
-      - name: Unpack zip archives from repo root (if any)
-        run: |
-          shopt -s nullglob
-          for z in *.zip; do echo "Unpacking $z"; unzip -oq "$z" -x '.github/*'; done
-      - name: Check project exists
-        id: chk
-        run: |
-          if [ -f "${{ matrix.dir }}/settings.gradle.kts" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "::notice::${{ matrix.dir }} not found, skipping"; fi
-      - uses: actions/setup-java@v4
-        if: steps.chk.outputs.ok == 'true'
-        with: { distribution: temurin, java-version: 17 }
-      - name: Accept Android licenses
-        if: steps.chk.outputs.ok == 'true'
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.chk.outputs.ok == 'true'
-        with: { gradle-version: 8.13 }
-      - name: Build release APK
-        if: steps.chk.outputs.ok == 'true'
-        working-directory: ${{ matrix.dir }}
-        run: gradle assembleRelease --no-daemon
-      - name: Collect APK
-        if: steps.chk.outputs.ok == 'true'
-        run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
-      - uses: actions/upload-artifact@v4
-        if: steps.chk.outputs.ok == 'true'
+      - uses: actions/checkout@v7
         with:
-          name: ${{ matrix.name }}-apk
-          path: ${{ matrix.name }}.apk
-      - uses: softprops/action-gh-release@v2
-        if: steps.chk.outputs.ok == 'true'
+          submodules: false   # подмодуль лежит внутри glass-overlay.zip обычными файлами
+
+      - name: Unzip glass-overlay.zip over the project
+        run: |
+          ZIP=$(ls glass-overlay.zip lawnchair-nightly-glass.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then echo "В корне репозитория нет glass-overlay.zip"; exit 1; fi
+          echo "Распаковываю $ZIP"
+          mkdir -p /tmp/glass
+          unzip -oq "$ZIP" -d /tmp/glass
+          # если внутри есть верхняя папка lawnchair-nightly/ - берём содержимое из неё
+          SRC=/tmp/glass
+          [ -d /tmp/glass/lawnchair-nightly ] && SRC=/tmp/glass/lawnchair-nightly
+          rm -rf platform_frameworks_libs_systemui
+          cp -a "$SRC"/. .
+          test -f platform_frameworks_libs_systemui/iconloaderlib/src/com/android/launcher3/icons/FastBitmapDrawable.kt
+          ls prebuilts/libs | head -3
+
+      - uses: actions/setup-java@v6
         with:
-          tag_name: ${{ matrix.name }}-${{ github.run_number }}
-          name: ${{ matrix.name }} ${{ github.run_number }}
-          files: ${{ matrix.name }}.apk
+          distribution: 'zulu'
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Build debug APK
+        run: ./gradlew assembleLawnWithQuickstepGithubDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Lawnchair-Glass-debug
+          path: build/outputs/apk/**/*.apk
+          if-no-files-found: error
