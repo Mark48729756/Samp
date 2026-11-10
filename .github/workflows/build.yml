@@ -1,74 +1,63 @@
-name: Build APKs
+name: Build APK from ZIP
+
 on:
   push:
-    branches: [ main, master ]
+    paths:
+      - '*.zip'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
-permissions:
-  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { dir: LiquidClock,      name: Clock }
-          - { dir: LiquidCalculator, name: Calculator }
-          - { dir: LiquidGallery,    name: Gallery }
-          - { dir: LiquidFiles,      name: Files }
-          - { dir: LiquidRecorder,   name: Recorder }
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack zip archives from repo root (if any)
-        run: |
-          shopt -s nullglob
-          for z in *.zip; do echo "Unpacking $z"; unzip -oq "$z" -x '.github/*'; done
-      - name: Check project exists
-        id: chk
-        run: |
-          if [ -f "${{ matrix.dir }}/settings.gradle.kts" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "::notice::${{ matrix.dir }} not found, skipping"; fi
-      - uses: actions/setup-java@v4
-        if: steps.chk.outputs.ok == 'true'
-        with: { distribution: temurin, java-version: 17 }
-      - name: Accept Android licenses
-        if: steps.chk.outputs.ok == 'true'
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-      - uses: gradle/actions/setup-gradle@v4
-        if: steps.chk.outputs.ok == 'true'
-        with: { gradle-version: 8.13 }
-      - name: Build release APK
-        if: steps.chk.outputs.ok == 'true'
-        working-directory: ${{ matrix.dir }}
-        run: gradle assembleRelease --no-daemon
-      - name: Collect APK
-        if: steps.chk.outputs.ok == 'true'
-        run: cp ${{ matrix.dir }}/app/build/outputs/apk/release/app-release.apk ${{ matrix.name }}.apk
-      - uses: actions/upload-artifact@v4
-        if: steps.chk.outputs.ok == 'true'
-        with:
-          name: apk-${{ matrix.name }}
-          path: ${{ matrix.name }}.apk
-          compression-level: 0
 
-  package:
-    needs: build
-    if: always() && !cancelled()
-    runs-on: ubuntu-latest
-    steps:
-      # склеивает все apk-* в один артефакт LiquidApps и удаляет промежуточные
-      - uses: actions/upload-artifact/merge@v4
+      - name: Найти и распаковать архив
+        id: unpack
+        run: |
+          ZIP=$(ls -t *.zip 2>/dev/null | head -n1 || true)
+          if [ -z "$ZIP" ]; then echo "::error::В корне репозитория нет .zip архива"; exit 1; fi
+          echo "Архив: $ZIP"
+          mkdir -p _src
+          unzip -q -o "$ZIP" -d _src
+          SETTINGS=$(find _src \( -name settings.gradle.kts -o -name settings.gradle \) -not -path '*/node_modules/*' | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)
+          if [ -z "$SETTINGS" ]; then echo "::error::В архиве не найден settings.gradle(.kts)"; exit 1; fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Проект: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          if [ -f "$DIR/gradlew" ]; then echo "wrapper=true" >> "$GITHUB_OUTPUT"; else echo "wrapper=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-java@v4
         with:
-          name: LiquidApps
-          pattern: apk-*
-          delete-merged: true
-      - uses: actions/download-artifact@v4
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          name: LiquidApps
-          path: apks
-      - name: Zip all APKs
-        run: cd apks && zip -q ../LiquidApps.zip *.apk && ls -la ../LiquidApps.zip
-      - uses: softprops/action-gh-release@v2
+          gradle-version: 8.9
+
+      - name: Сборка debug APK
+        working-directory: ${{ steps.unpack.outputs.dir }}
+        run: |
+          if [ "${{ steps.unpack.outputs.wrapper }}" = "true" ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Собрать APK в одну папку
+        run: |
+          mkdir -p apk
+          find "${{ steps.unpack.outputs.dir }}" -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} apk/ \;
+          ls -la apk
+          test -n "$(ls apk/*.apk)"
+
+      - uses: actions/upload-artifact@v4
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Build ${{ github.run_number }}
-          files: LiquidApps.zip
+          name: KievCine-debug-apk
+          path: apk/*.apk
+          if-no-files-found: error
