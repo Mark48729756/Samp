@@ -33,7 +33,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - name: Принять лицензии Android SDK (SDK уже есть на runner)
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          ls "$ANDROID_HOME/platforms" || true
 
       - uses: gradle/actions/setup-gradle@v4
         with:
