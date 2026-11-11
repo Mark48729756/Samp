@@ -1,112 +1,54 @@
-name: Build APK
-
-# Репозиторий: в корне лежат ТОЛЬКО main.zip и .github/workflows/build.yml.
-# Workflow сам распаковывает main.zip, скачивает модель рук, собирает APK
-# и выкладывает его в Releases + Artifacts.
-
-on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - 'main.zip'
-      - '.github/workflows/build.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: write   # нужно для создания Release
-
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+name: Blutter (разбор Dart-кода лаунчера)
+on: workflow_dispatch
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+  blutter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Разархивировать main.zip
+      - name: Зависимости
         run: |
-          set -e
-          if [ ! -f main.zip ]; then
-            echo "::error::В корне репозитория нет main.zip. Загрузи архив в ветку main."
-            exit 1
+          sudo apt-get update
+          sudo apt-get install -y python3-pyelftools python3-requests git cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev unzip zip
+
+      - name: Распаковать вход
+        run: |
+          mkdir -p in
+          unzip -q Blutter.zip -d in
+          ls -la in/arm64-v8a
+
+      - name: Blutter
+        run: |
+          git clone --depth 1 https://github.com/worawit/blutter
+          cd blutter
+          python3 blutter.py ../in/arm64-v8a ../out 2>&1 | tee ../blutter.log
+          
+      - name: Выбрать нужные файлы
+        if: always()
+        run: |
+          mkdir -p small
+          cp blutter.log small/ || true
+          ls -la out || true
+          if [ -d out/asm ]; then
+            grep -rlE "clickIcon blocked|shouldCancelAnimImmediately|skip iconClick|handlePreStartup blocked|isLaunchingNewTask|canUseBreakOpenAnim|cancelAnimImmediately|openingRemoteAnimationOpen" out/asm > small/files.txt || true
+            while read f; do mkdir -p "small/$(dirname "$f")"; cp "$f" "small/$f"; done < small/files.txt
           fi
-          rm -rf _src && mkdir _src
-          unzip -q -o main.zip -d _src
-          # ищем корень Gradle-проекта (архив может быть с вложенной папкой)
-          S=$(find _src -maxdepth 4 -name settings.gradle.kts -not -path '*/__MACOSX/*' -printf '%d %h\n' | sort -n | head -n 1 | cut -d' ' -f2-)
-          if [ -z "$S" ]; then
-            echo "::error::В main.zip не найден settings.gradle.kts"
-            find _src -maxdepth 3 | head -50
-            exit 1
-          fi
-          echo "Корень проекта: $S"
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$S" >> "$GITHUB_ENV"
+          cp out/pp.txt small/ 2>/dev/null || true
+          (cd small && zip -qr ../relevant.zip .)
+          ls -la relevant.zip
 
-      - name: Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          distribution: temurin
-          java-version: '17'
+          name: relevant
+          path: relevant.zip
+          retention-days: 7
 
-      - name: Android SDK (лицензии, платформа, build-tools)
-        run: |
-          set -e
-          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKM" ]; then SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1); fi
-          yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" "platforms;android-34" "build-tools;34.0.0" > /dev/null
-
-      - name: Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          gradle-version: '8.9'
-
-      - name: Скачать модель трекинга рук (hand_landmarker.task)
-        run: |
-          set -e
-          mkdir -p "$PROJECT_DIR/app/src/main/assets"
-          curl -L --fail --retry 5 --retry-delay 3 \
-            -o "$PROJECT_DIR/app/src/main/assets/hand_landmarker.task" \
-            https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
-          SIZE=$(stat -c%s "$PROJECT_DIR/app/src/main/assets/hand_landmarker.task")
-          echo "Размер модели: $SIZE байт"
-          [ "$SIZE" -gt 1000000 ] || { echo "::error::Модель скачалась некорректно"; exit 1; }
-
-      - name: Собрать APK
-        run: |
-          set -e
-          cd "$PROJECT_DIR"
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug --no-daemon --stacktrace
-          else
-            gradle assembleDebug --no-daemon --stacktrace
-          fi
-
-      - name: Подготовить APK
-        run: |
-          set -e
-          mkdir -p out
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -name '*.apk' | head -n 1)
-          [ -n "$APK" ] || { echo "::error::APK не найден"; exit 1; }
-          cp "$APK" out/HyperVR.apk
-          ls -lh out
-
-      - name: Artifact (скачать из вкладки Actions)
-        uses: actions/upload-artifact@v4
-        with:
-          name: HyperVR-apk
-          path: out/HyperVR.apk
-
-      - name: Release (скачать APK прямо с телефона)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: HyperVR сборка ${{ github.run_number }}
-          files: out/HyperVR.apk
-          make_latest: true
+          name: blutter_full
+          path: out
+          retention-days: 3
