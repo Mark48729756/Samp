@@ -1,63 +1,59 @@
-name: Build APK
-
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
+name: Blutter (разбор Dart-кода лаунчера)
+on: workflow_dispatch
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  blutter:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
-      - name: Разархивировать main.zip (если он есть)
+      - name: Зависимости
         run: |
-          if [ -f main.zip ]; then
-            rm -rf _src && mkdir _src
-            unzip -q -o main.zip -d _src
-            S=$(find _src -maxdepth 3 -name settings.gradle.kts -printf '%h\n' | head -1)
-            echo "PROJECT_DIR=$S" >> $GITHUB_ENV
-          else
-            echo "PROJECT_DIR=." >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y python3-pyelftools python3-requests git cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev unzip zip
+
+      - name: Распаковать вход
+        run: |
+          mkdir -p in
+          unzip -q Blutter.zip -d in
+          ls -la in/arm64-v8a
+
+      - name: Blutter
+        run: |
+          git clone --depth 1 https://github.com/worawit/blutter
+          cd blutter
+          # у Xiaomi свой Dart: хеш снапшота не совпадает со стоковым 3.10.1 -> подставляем хеш из самого libapp.so
+          export SNAPSHOT_HASH=$(python3 -c "from extract_dart_info import extract_snapshot_hash_flags as f; print(f('../in/arm64-v8a/libapp.so')[0])")
+          echo "snapshot hash: $SNAPSHOT_HASH"
+          sed -i 's/dart_info = DartLibInfo(version, os_name, arch)$/dart_info = DartLibInfo(version, os_name, arch, None, os.environ.get("SNAPSHOT_HASH"))/' blutter.py
+          grep -n SNAPSHOT_HASH blutter.py
+          python3 blutter.py ../in/arm64-v8a/libapp.so ../out --dart-version 3.10.1_android_arm64 2>&1 | tee ../blutter.log
+          
+      - name: Выбрать нужные файлы
+        if: always()
+        run: |
+          mkdir -p small
+          cp blutter.log small/ || true
+          ls -la out || true
+          if [ -d out/asm ]; then
+            grep -rlE "clickIcon blocked|shouldCancelAnimImmediately|skip iconClick|handlePreStartup blocked|isLaunchingNewTask|canUseBreakOpenAnim|cancelAnimImmediately|openingRemoteAnimationOpen" out/asm > small/files.txt || true
+            while read f; do mkdir -p "small/$(dirname "$f")"; cp "$f" "small/$f"; done < small/files.txt
           fi
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Скачать модель трекинга рук
-        run: |
-          mkdir -p "$PROJECT_DIR/app/src/main/assets"
-          curl -L --fail -o "$PROJECT_DIR/app/src/main/assets/hand_landmarker.task" \
-            https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
-
-      - name: Собрать APK
-        run: |
-          cd "$PROJECT_DIR"
-          gradle assembleDebug --no-daemon --stacktrace
-
-      - name: Подготовить APK
-        run: |
-          mkdir -p out
-          cp "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk out/HyperVR.apk
+          cp out/pp.txt small/ 2>/dev/null || true
+          (cd small && zip -qr ../relevant.zip .)
+          ls -la relevant.zip
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: HyperVR-apk
-          path: out/HyperVR.apk
+          name: relevant
+          path: relevant.zip
+          retention-days: 7
 
-      - name: Выложить в Releases (скачать APK прямо с телефона)
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          tag_name: build-${{ github.run_number }}
-          name: HyperVR сборка ${{ github.run_number }}
-          files: out/HyperVR.apk
+          name: blutter_full
+          path: out
+          retention-days: 3
