@@ -23,7 +23,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/worawit/blutter
           cd blutter
-          python3 blutter.py ../in/arm64-v8a ../out 2>&1 | tee ../blutter.log
+          python3 blutter.py ../in/arm64-v8a/libapp.so ../out --dart-version 3.10.1_android_arm64 2>&1 | tee ../blutter.log
           
       - name: Выбрать нужные файлы
         if: always()
