@@ -1,67 +1,112 @@
-name: Build APK from ZIP
+name: Build APK
+
+# Репозиторий: в корне лежат ТОЛЬКО main.zip и .github/workflows/build.yml.
+# Workflow сам распаковывает main.zip, скачивает модель рук, собирает APK
+# и выкладывает его в Releases + Artifacts.
 
 on:
   push:
+    branches: [ main, master ]
     paths:
-      - '*.zip'
+      - 'main.zip'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+
+permissions:
+  contents: write   # нужно для создания Release
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Найти и распаковать архив
-        id: unpack
+      - name: Разархивировать main.zip
         run: |
-          ZIP=$(ls -t *.zip 2>/dev/null | head -n1 || true)
-          if [ -z "$ZIP" ]; then echo "::error::В корне репозитория нет .zip архива"; exit 1; fi
-          echo "Архив: $ZIP"
-          mkdir -p _src
-          unzip -q -o "$ZIP" -d _src
-          SETTINGS=$(find _src \( -name settings.gradle.kts -o -name settings.gradle \) -not -path '*/node_modules/*' | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)
-          if [ -z "$SETTINGS" ]; then echo "::error::В архиве не найден settings.gradle(.kts)"; exit 1; fi
-          DIR=$(dirname "$SETTINGS")
-          echo "Проект: $DIR"
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          if [ -f "$DIR/gradlew" ]; then echo "wrapper=true" >> "$GITHUB_OUTPUT"; else echo "wrapper=false" >> "$GITHUB_OUTPUT"; fi
+          set -e
+          if [ ! -f main.zip ]; then
+            echo "::error::В корне репозитория нет main.zip. Загрузи архив в ветку main."
+            exit 1
+          fi
+          rm -rf _src && mkdir _src
+          unzip -q -o main.zip -d _src
+          # ищем корень Gradle-проекта (архив может быть с вложенной папкой)
+          S=$(find _src -maxdepth 4 -name settings.gradle.kts -not -path '*/__MACOSX/*' -printf '%d %h\n' | sort -n | head -n 1 | cut -d' ' -f2-)
+          if [ -z "$S" ]; then
+            echo "::error::В main.zip не найден settings.gradle.kts"
+            find _src -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "Корень проекта: $S"
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/$S" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-java@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
-      - name: Принять лицензии Android SDK (SDK уже есть на runner)
+      - name: Android SDK (лицензии, платформа, build-tools)
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-          ls "$ANDROID_HOME/platforms" || true
+          set -e
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1); fi
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.9
+          gradle-version: '8.9'
 
-      - name: Сборка debug APK
-        working-directory: ${{ steps.unpack.outputs.dir }}
+      - name: Скачать модель трекинга рук (hand_landmarker.task)
         run: |
-          if [ "${{ steps.unpack.outputs.wrapper }}" = "true" ]; then
-            chmod +x gradlew
+          set -e
+          mkdir -p "$PROJECT_DIR/app/src/main/assets"
+          curl -L --fail --retry 5 --retry-delay 3 \
+            -o "$PROJECT_DIR/app/src/main/assets/hand_landmarker.task" \
+            https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+          SIZE=$(stat -c%s "$PROJECT_DIR/app/src/main/assets/hand_landmarker.task")
+          echo "Размер модели: $SIZE байт"
+          [ "$SIZE" -gt 1000000 ] || { echo "::error::Модель скачалась некорректно"; exit 1; }
+
+      - name: Собрать APK
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
             ./gradlew assembleDebug --no-daemon --stacktrace
           else
             gradle assembleDebug --no-daemon --stacktrace
           fi
 
-      - name: Собрать APK в одну папку
+      - name: Подготовить APK
         run: |
-          mkdir -p apk
-          find "${{ steps.unpack.outputs.dir }}" -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} apk/ \;
-          ls -la apk
-          test -n "$(ls apk/*.apk)"
+          set -e
+          mkdir -p out
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -name '*.apk' | head -n 1)
+          [ -n "$APK" ] || { echo "::error::APK не найден"; exit 1; }
+          cp "$APK" out/HyperVR.apk
+          ls -lh out
 
-      - uses: actions/upload-artifact@v4
+      - name: Artifact (скачать из вкладки Actions)
+        uses: actions/upload-artifact@v4
         with:
-          name: KievCine-debug-apk
-          path: apk/*.apk
-          if-no-files-found: error
+          name: HyperVR-apk
+          path: out/HyperVR.apk
+
+      - name: Release (скачать APK прямо с телефона)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: HyperVR сборка ${{ github.run_number }}
+          files: out/HyperVR.apk
+          make_latest: true
