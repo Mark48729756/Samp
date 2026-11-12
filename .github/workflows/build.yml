@@ -22,33 +22,30 @@ jobs:
       - name: Setup CMake
         uses: lukka/get-cmake@latest
 
-      - name: Locate CMakeLists
-        id: locate
+      - name: Extract Engine
         shell: pwsh
         run: |
-          Write-Host "Repository structure:"
-          Get-ChildItem -Force
+          $archive = "ANVIL-Engine-M41-Neutral-Graphite.zip"
 
-          $files = Get-ChildItem -Path . -Filter CMakeLists.txt -Recurse -File |
-            Where-Object { $_.FullName -notmatch '\\(build|\.git)\\' }
-
-          if (-not $files) {
-            Write-Error "CMakeLists.txt NOT FOUND!"
+          if (!(Test-Path $archive)) {
+            Write-Error "Engine archive not found!"
             exit 1
           }
 
-          $cmakeFile = $files | Select-Object -First 1
-          $sourceDir = $cmakeFile.Directory.FullName
+          Expand-Archive -Path $archive -DestinationPath extracted -Force
 
-          Write-Host "Found: $($cmakeFile.FullName)"
-          Write-Host "Source directory: $sourceDir"
+          if (!(Test-Path "extracted/anvil-engine/CMakeLists.txt")) {
+            Write-Error "CMakeLists.txt not found inside archive!"
+            Get-ChildItem extracted -Recurse
+            exit 1
+          }
 
-          "source_dir=$sourceDir" >> $env:GITHUB_OUTPUT
+          Write-Host "Engine extracted successfully."
 
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S "${{ steps.locate.outputs.source_dir }}" -B build -A x64
+          cmake -S extracted/anvil-engine -B build -A x64
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
@@ -72,5 +69,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ANVIL-M41-Build-Logs
-          path: build.log
+          path: |
+            build.log
+            build/Testing/Temporary/LastTest.log
           if-no-files-found: warn
