@@ -1,59 +1,99 @@
-name: Blutter (разбор Dart-кода лаунчера)
-on: workflow_dispatch
+
+name: ANVIL ENGINE M37 - Windows Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  blutter:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+  build:
+    name: Build ANVIL ENGINE M37
+    runs-on: windows-2022
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Зависимости
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pyelftools python3-requests git cmake ninja-build build-essential pkg-config libicu-dev libcapstone-dev unzip zip
-
-      - name: Распаковать вход
-        run: |
-          mkdir -p in
-          unzip -q Blutter.zip -d in
-          ls -la in/arm64-v8a
-
-      - name: Blutter
-        run: |
-          git clone --depth 1 https://github.com/worawit/blutter
-          cd blutter
-          # у Xiaomi свой Dart: хеш снапшота не совпадает со стоковым 3.10.1 -> подставляем хеш из самого libapp.so
-          export SNAPSHOT_HASH=$(python3 -c "from extract_dart_info import extract_snapshot_hash_flags as f; print(f('../in/arm64-v8a/libapp.so')[0])")
-          echo "snapshot hash: $SNAPSHOT_HASH"
-          sed -i 's/dart_info = DartLibInfo(version, os_name, arch)$/dart_info = DartLibInfo(version, os_name, arch, None, os.environ.get("SNAPSHOT_HASH"))/' blutter.py
-          grep -n SNAPSHOT_HASH blutter.py
-          python3 blutter.py ../in/arm64-v8a/libapp.so ../out --dart-version 3.10.1_android_arm64 2>&1 | tee ../blutter.log
-          
-      - name: Выбрать нужные файлы
-        if: always()
-        run: |
-          mkdir -p small
-          cp blutter.log small/ || true
-          ls -la out || true
-          if [ -d out/asm ]; then
-            grep -rlE "clickIcon blocked|shouldCancelAnimImmediately|skip iconClick|handlePreStartup blocked|isLaunchingNewTask|canUseBreakOpenAnim|cancelAnimImmediately|openingRemoteAnimationOpen" out/asm > small/files.txt || true
-            while read f; do mkdir -p "small/$(dirname "$f")"; cp "$f" "small/$f"; done < small/files.txt
-          fi
-          cp out/pp.txt small/ 2>/dev/null || true
-          (cd small && zip -qr ../relevant.zip .)
-          ls -la relevant.zip
-
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          name: relevant
-          path: relevant.zip
-          retention-days: 7
+          arch: x64
 
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Find and Extract Engine ZIP
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem "$env:GITHUB_WORKSPACE" -Filter "*.zip" -File |
+            Select-Object -First 1
+
+          if (-not $zip) {
+            throw "ERROR: Engine ZIP not found in repository root!"
+          }
+
+          Write-Host "Found: $($zip.Name)"
+
+          $extract = "$env:RUNNER_TEMP\ANVIL_SOURCE"
+
+          Expand-Archive -Path $zip.FullName -DestinationPath $extract -Force
+
+          $cmake = Get-ChildItem $extract -Recurse -Filter "CMakeLists.txt" -File |
+            Sort-Object { $_.FullName.Length } |
+            Select-Object -First 1
+
+          if (-not $cmake) {
+            throw "ERROR: CMakeLists.txt not found!"
+          }
+
+          $source = $cmake.Directory.FullName
+
+          Write-Host "Source: $source"
+
+          "ANVIL_SOURCE_DIR=$source" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure Engine
+        shell: pwsh
+        run: |
+          cmake -S "$env:ANVIL_SOURCE_DIR" `
+            -B "$env:GITHUB_WORKSPACE\build" `
+            -A x64
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake configuration failed!"
+          }
+
+      - name: Compile Engine
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE\build" `
+            --config Release `
+            --parallel 2
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "ENGINE COMPILATION FAILED!"
+          }
+
+      - name: Run Tests
+        shell: pwsh
+        run: |
+          ctest --test-dir "$env:GITHUB_WORKSPACE\build" `
+            -C Release --output-on-failure
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "TESTS FAILED!"
+          }
+
+      - name: Upload Build Artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: blutter_full
-          path: out
-          retention-days: 3
+          name: ANVIL-ENGINE-M37-Windows-x64-Release
+          path: build/
+          if-no-files-found: error
+          retention-days: 14
