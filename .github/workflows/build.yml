@@ -22,16 +22,34 @@ jobs:
       - name: Setup CMake
         uses: lukka/get-cmake@latest
 
+      - name: Locate CMakeLists
+        id: locate
+        shell: pwsh
+        run: |
+          Write-Host "Repository structure:"
+          Get-ChildItem -Force
+
+          $files = Get-ChildItem -Path . -Filter CMakeLists.txt -Recurse -File |
+            Where-Object { $_.FullName -notmatch '\\(build|\.git)\\' }
+
+          if (-not $files) {
+            Write-Error "CMakeLists.txt NOT FOUND!"
+            exit 1
+          }
+
+          $cmakeFile = $files | Select-Object -First 1
+          $sourceDir = $cmakeFile.Directory.FullName
+
+          Write-Host "Found: $($cmakeFile.FullName)"
+          Write-Host "Source directory: $sourceDir"
+
+          "source_dir=$sourceDir" >> $env:GITHUB_OUTPUT
+
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S anvil-engine -B build -A x64 `
-            -DBUILD_TESTING=ON 2>&1 |
-            Tee-Object configure.log
-
-          if ($LASTEXITCODE -ne 0) {
-            exit 1
-          }
+          cmake -S "${{ steps.locate.outputs.source_dir }}" -B build -A x64
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
         shell: pwsh
@@ -40,12 +58,11 @@ jobs:
             Tee-Object build.log
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "BUILD FAILED!"
             Select-String -Path build.log -Pattern "error C[0-9]+|fatal error|FAILED"
             exit 1
           }
 
-      - name: Run Tests
+      - name: Tests
         shell: pwsh
         run: |
           ctest --test-dir build -C Release --output-on-failure
@@ -55,8 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ANVIL-M41-Build-Logs
-          path: |
-            configure.log
-            build.log
-            build/Testing/Temporary/LastTest.log
+          path: build.log
           if-no-files-found: warn
