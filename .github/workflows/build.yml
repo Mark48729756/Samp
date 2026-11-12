@@ -1,99 +1,59 @@
 
-name: ANVIL ENGINE M37 - Windows Build
+name: ANVIL ENGINE M41 Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Build ANVIL ENGINE M37
-    runs-on: windows-2022
+    runs-on: windows-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
 
-      - name: Find and Extract Engine ZIP
-        shell: pwsh
-        run: |
-          $zip = Get-ChildItem "$env:GITHUB_WORKSPACE" -Filter "*.zip" -File |
-            Select-Object -First 1
-
-          if (-not $zip) {
-            throw "ERROR: Engine ZIP not found in repository root!"
-          }
-
-          Write-Host "Found: $($zip.Name)"
-
-          $extract = "$env:RUNNER_TEMP\ANVIL_SOURCE"
-
-          Expand-Archive -Path $zip.FullName -DestinationPath $extract -Force
-
-          $cmake = Get-ChildItem $extract -Recurse -Filter "CMakeLists.txt" -File |
-            Sort-Object { $_.FullName.Length } |
-            Select-Object -First 1
-
-          if (-not $cmake) {
-            throw "ERROR: CMakeLists.txt not found!"
-          }
-
-          $source = $cmake.Directory.FullName
-
-          Write-Host "Source: $source"
-
-          "ANVIL_SOURCE_DIR=$source" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Install CMake
+      - name: Setup CMake
         uses: lukka/get-cmake@latest
 
-      - name: Configure Engine
+      - name: Configure
         shell: pwsh
         run: |
-          cmake -S "$env:ANVIL_SOURCE_DIR" `
-            -B "$env:GITHUB_WORKSPACE\build" `
-            -A x64
+          cmake -S . -B build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DANVIL_BUILD_TESTS=ON
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "CMake configuration failed!"
-          }
-
-      - name: Compile Engine
+      - name: Build
         shell: pwsh
         run: |
-          cmake --build "$env:GITHUB_WORKSPACE\build" `
+          cmake --build build `
             --config Release `
-            --parallel 2
+            --parallel 2 `
+            2>&1 | Tee-Object build.log
 
           if ($LASTEXITCODE -ne 0) {
-            throw "ENGINE COMPILATION FAILED!"
+            Write-Host "BUILD FAILED!"
+            Select-String -Path build.log -Pattern "error C[0-9]+|fatal error|FAILED" 
+            exit 1
           }
 
       - name: Run Tests
         shell: pwsh
         run: |
-          ctest --test-dir "$env:GITHUB_WORKSPACE\build" `
-            -C Release --output-on-failure
+          ctest --test-dir build -C Release --output-on-failure
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "TESTS FAILED!"
-          }
-
-      - name: Upload Build Artifacts
-        if: success()
+      - name: Upload Build Logs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ANVIL-ENGINE-M37-Windows-x64-Release
-          path: build/
-          if-no-files-found: error
-          retention-days: 14
+          name: ANVIL-M41-Build-Logs
+          path: |
+            build.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
