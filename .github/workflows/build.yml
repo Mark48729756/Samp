@@ -1,5 +1,4 @@
-
-name: ANVIL ENGINE M41 Build
+name: ANVIL ENGINE M100 Build
 
 on:
   push:
@@ -18,6 +17,8 @@ jobs:
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Setup CMake
         uses: lukka/get-cmake@latest
@@ -33,37 +34,38 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install Jinja2
 
-      - name: Extract Engine
+      - name: Extract ANVIL ENGINE M100
         shell: pwsh
         run: |
-          $archive = "ANVIL-Engine-M41-Neutral-Graphite.zip"
+          $archive = "ANVIL-Engine-M100-AUDIT-FIXED.zip"
 
           if (!(Test-Path $archive)) {
-            Write-Error "Engine archive not found!"
+            Write-Error "ANVIL ENGINE M100 archive not found!"
             exit 1
           }
 
           Expand-Archive -Path $archive -DestinationPath extracted -Force
 
-          if (!(Test-Path "extracted/anvil-engine/CMakeLists.txt")) {
-            Write-Error "CMakeLists.txt not found inside archive!"
+          $source = "extracted/anvil_m58"
+
+          if (!(Test-Path "$source/CMakeLists.txt")) {
+            Write-Error "M100 CMakeLists.txt not found!"
             Get-ChildItem extracted -Recurse
             exit 1
           }
 
-          Write-Host "Engine extracted successfully."
+          Write-Host "ANVIL ENGINE M100 extracted successfully."
 
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S extracted/anvil-engine -B build -A x64 2>&1 |
+          cmake -S extracted/anvil_m58 -B build -A x64 `
+            -DBUILD_TESTING=ON 2>&1 |
             Tee-Object configure.log
 
-          $configureExit = $LASTEXITCODE
-
-          if ($configureExit -ne 0) {
+          if ($LASTEXITCODE -ne 0) {
             Write-Error "CMake configuration failed!"
-            exit $configureExit
+            exit 1
           }
 
       - name: Build
@@ -72,44 +74,42 @@ jobs:
           cmake --build build --config Release --parallel 2 2>&1 |
             Tee-Object build.log
 
-          $buildExit = $LASTEXITCODE
-
-          if ($buildExit -ne 0) {
-            Write-Error "ANVIL ENGINE build failed!"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ANVIL ENGINE M100 build failed!"
             Select-String -Path build.log -Pattern "error C[0-9]+|fatal error|FAILED|LNK[0-9]+"
-            exit $buildExit
+            exit 1
           }
 
-      - name: Tests
+      - name: Run Tests
         shell: pwsh
         run: |
           ctest --test-dir build -C Release --output-on-failure 2>&1 |
             Tee-Object tests.log
 
-          $testExit = $LASTEXITCODE
-
-          if ($testExit -ne 0) {
-            Write-Error "ANVIL ENGINE tests failed!"
-            exit $testExit
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ANVIL ENGINE M100 tests failed!"
+            exit 1
           }
 
       - name: Upload Build Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ANVIL-M41-Build
+          name: ANVIL-ENGINE-M100-WINDOWS-x64
           path: |
             build/Release/*.exe
-            build/editor/Release/*.exe
             build/Release/*.dll
+            build/editor/Release/*.exe
             build/editor/Release/*.dll
+            build/sandbox/Release/*.exe
+            build/sandbox/Release/*.dll
           if-no-files-found: warn
 
-      - name: Upload Logs
+      - name: Upload Build Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ANVIL-M41-Build-Logs
+          name: ANVIL-ENGINE-M100-BUILD-LOGS
           path: |
             configure.log
             build.log
